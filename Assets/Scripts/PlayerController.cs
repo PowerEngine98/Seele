@@ -1,4 +1,5 @@
 ﻿using System.Collections;
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
@@ -16,6 +17,9 @@ namespace com.seele
         public const float INITIAL_ENERGY = 0F;
         public const float ENERGY_PER_ORB = 1F;
         public const float NOMINAL_SPEED = 3F;
+        public const float DASH_RANGE = 3.5F;
+        public const float DASH_DURATION = 0.08F;
+        public const float DASH_COOLDOWN = 0.5F;
         public const float RAMP_SPEED = 8F;
 
         public Camera camera;
@@ -27,16 +31,13 @@ namespace com.seele
         private Vector3 from;
         public Vector3 momentum;
         public float energy = INITIAL_ENERGY;
-        public float dashSpeed = 2 * NOMINAL_SPEED;
-        public bool inJump = false;
-        public bool inDash = false;
-        public float jumpSpeed = 3F;
-
-        public float beginJumpTime;
-
+        public bool inJump;
         public bool hasJumped;
-
-        public float endJumpTime;
+        public bool inDash;
+        public bool inDashCooldown;
+        public float jumpSpeed = 3F;
+        public float dashTime;
+        public bool detached;
         public bool grounded;
         public bool pushing;
         public bool freezed;
@@ -45,7 +46,7 @@ namespace com.seele
         {
             from = transform.position;
             agent.speed = NOMINAL_SPEED;
-            momentum = transform.position;
+            momentum = Vector3.zero;
         }
 
         void FixedUpdate()
@@ -54,28 +55,22 @@ namespace com.seele
             //Jump
             if (grounded)
             {
-                if (beginJumpTime > 0)
+                if (inJump)
                 {
-                    beginJumpTime += Time.deltaTime;
+                    hasJumped = false;
+                    inJump = false;
+                    rigidbody.AddForce(new Vector3(-rigidbody.velocity.x * 0.9F, 0, -rigidbody.velocity.z * 0.9F), ForceMode.Impulse);
+                    Attach();
                 }
-                if (inJump && beginJumpTime > 0.2)
+                else if (!hasJumped && Input.GetKey(KeyCode.Space))
                 {
-                    endJumpTime += Time.deltaTime;
-                    if (endJumpTime >= 0.3)
-                    {
-                        beginJumpTime = 0;
-                        inJump = false;
-                        rigidbody.AddForce(new Vector3(-rigidbody.velocity.x * 0.9F, 0, -rigidbody.velocity.z * 0.9F), ForceMode.Impulse);
-                        agent.enabled = true;
-                        endJumpTime = 0;
-                    }
-                }
-                else if (Input.GetKey(KeyCode.Space))
-                {
-                    agent.enabled = false;
-                    inJump = true;
+                    hasJumped = true;
+                    Detach();
                     rigidbody.AddForce(new Vector3(momentum.x * 0.5F, 1F, momentum.z * 0.5F) * jumpSpeed, ForceMode.Impulse);
-                    beginJumpTime += Time.deltaTime;
+                    DelayedTask.Execute(0.2F, () =>
+                    {
+                        inJump = true;
+                    });
                 }
             }
             //Movement and click interaction
@@ -100,38 +95,87 @@ namespace com.seele
                 }
             }
             //Dash
-            if (inDash)
-            {
-                agent.enabled = true;
-                inDash = false;
-            }
-            else if (Input.GetKey(KeyCode.LeftShift) && energy > 0.5F * Time.deltaTime)
+            if (!inDash && !inDashCooldown && Input.GetKey(KeyCode.W))
             {
                 inDash = true;
-                energy -= 0.5F * Time.deltaTime;
-                if (isGrounded())
+                energy--;
+                if (agent.enabled)
                 {
-                    agent.speed = dashSpeed;
+                    agent.isStopped = true;
+                    agent.ResetPath();
                 }
-                else
+                Detach();
+                Vector3 axis = transform.rotation.ToEulerAngles();
+                Vector3 direction = momentum.x + momentum.z == 0 ? new Vector3((float)Math.Sin(axis.y), 0, (float)Math.Cos(axis.y)) : momentum;
+                Vector3 dashVector = direction * (DASH_RANGE / DASH_DURATION);
+                rigidbody.velocity = new Vector3(dashVector.x, 0, dashVector.z);
+                DelayedTask.Execute(DASH_DURATION, () =>
                 {
-                    agent.enabled = false;
-                    rigidbody.AddForce(momentum * agent.speed, ForceMode.Impulse);
-                    agent.speed = NOMINAL_SPEED;
-                }
-
+                    inDash = false;
+                    rigidbody.velocity = new Vector3(0, 0, 0);
+                    inDashCooldown = true;
+                    DelayedTask.Execute(DASH_COOLDOWN, () =>
+                    {
+                        inDashCooldown = false;
+                    });
+                });
+                Attach(DASH_DURATION + 0.5F);
             }
+            //Momentum
             if (!inJump)
             {
                 momentum = (transform.position - from).normalized;
             }
             from = transform.position;
+            //Facing
+            /*if (momentum.magnitude == 0)
+            {
+                Ray ray = camera.ScreenPointToRay(Input.mousePosition);
+                RaycastHit raycast;
+                if (Physics.Raycast(ray, out raycast))
+                {
+                    Vector3 turnVector = Vector3.RotateTowards(transform.forward, raycast.point - transform.position, 0.05F, 0.0f);
+                    transform.rotation = Quaternion.LookRotation(turnVector);
+                }
+            }
+            */
+            //NavMesh attachment
+            if (!detached && grounded && !agent.enabled)
+            {
+                agent.enabled = true;
+            }
             //Animations
             bool walking = momentum.magnitude > 0 && grounded && !inJump && !pushing;
-            animator.SetBool("walking", walking);
             animator.speed = walking ? agent.speed : 1;
+            animator.SetBool("walking", walking);
             animator.SetBool("jumping", !grounded);
+            animator.SetBool("dashing", pushing);
             animator.SetBool("pushing", pushing);
+        }
+        private void Detach()
+        {
+            detached = true;
+            agent.enabled = false;
+        }
+
+        private void Detach(float delay, VoidCallback callback)
+        {
+            Detach();
+            DelayedTask.Execute(delay, callback);
+        }
+
+        private void Attach()
+        {
+            detached = false;
+            //agent.enabled = true;
+        }
+
+        private void Attach(float delay)
+        {
+            DelayedTask.Execute(delay, () =>
+            {
+                Attach();
+            });
         }
 
         private void OnTriggerEnter(Collider other)

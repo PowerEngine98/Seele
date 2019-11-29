@@ -37,7 +37,7 @@ namespace com.seele
             }
         }
 
-        public void OnPlayerCollision()
+        public virtual void OnPlayerCollision()
         {
             Destroy(gameObject);
         }

@@ -8,7 +8,7 @@ namespace com.seele
     {
         public Executable executable;
 
-        public void OnPlayerCollision()
+        public override void OnPlayerCollision()
         {
             if (executable != null)
             {
